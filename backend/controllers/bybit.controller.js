@@ -1,59 +1,64 @@
-import axios from "axios"
-import WebSocket from "ws"
+import axios from "axios";
+import WebSocket from "ws";
 
 
-
-
-let liquidationData = []
 const getUSDTcontracts = async () => {
     try {
-        const res = await axios.get('https://api.bybit.com/v5/market/instruments-info?category=linear')
-        const symbols = res.data.result.list.filter(item=>item.symbol.endsWith("USDT")).map(item=>`liquidation.${item.symbol}`)
-        console.log(`Fetched ${symbols.length} USDT symbols`);
-        return symbols;
-
-
+        const res = await axios.get(
+            "https://api.bybit.com/v5/market/instruments-info?category=linear"
+        );
+        return res.data.result.list
+            .filter(item => item.symbol.endsWith("USDT"))
+            .map(item => `liquidation.${item.symbol}`);
     } catch (error) {
-        console.error("failed to fetch symbol",error.message);
-        return []
-        
+        console.error("Failed to fetch Bybit symbols:", error.message);
+        return [];
     }
-}
-export const connectToBybit = async () => {
-    const args=await getUSDTcontracts()
-    if(args.length===0) return
-    const socket = new WebSocket('wss://stream.bybit.com/v5/public/linear')
-    socket.on('open', () => {
-        console.log("connected to Bybit");
-        socket.send(JSON.stringify({
-            op: 'subscribe',
-            args:args,
-        }));
-    })
-    socket.on('message', (data) => {
-        console.log(data.toString());
-        const parsed = JSON.parse(data)
-        if (parsed.topic?.includes('liquidation')) {
-            const info = parsed.data
-            liquidationData.push(info);
-            if (liquidationData.length > 1000) {
-                liquidationData.shift()
-            }
+};
+
+const formattedHelper=({ exchange, symbol, side, price, qty, timestamp,totalUSD })=>({
+    exchange,
+    symbol:symbol.replace(/[^A-Z]/g, ""),
+    side,
+    price:Number(price),
+    qty:Number(qty),
+    timestamp:Number(timestamp),
+    totalUSD
+})
+
+export const connectToBybit = async (onData) => {
+    const args = await getUSDTcontracts();
+    if (args.length === 0) return;
+
+    const socket = new WebSocket("wss://stream.bybit.com/v5/public/linear");
+
+    socket.on("open", () => {
+        console.log("Connected to Bybit");
+        socket.send(JSON.stringify({ op: "subscribe", args }));
+    });
+
+    socket.on("message", (data) => {
+        const parsed = JSON.parse(data);      
+        if (parsed.topic?.includes("liquidation")) {
+            const d = parsed.data;
+            onData(formattedHelper({
+                exchange: "Bybit",
+                symbol: d.symbol,
+                side: d.side?.toUpperCase(),
+                price: parseFloat(d.price),
+                qty: parseFloat(d.size),
+                timestamp: d.time || Date.now(),
+                totalUSD:(parseFloat(d.price)*parseFloat(d.size)).toFixed(2),
+            }));
         }
-    })
-    socket.on('close', () => {
-        console.log("websocket is closed, reconnecting..");
-        setTimeout(connectToBybit, 5000)
+    });
 
-    })
-    socket.on('error', (error) => {
-        console.error('WebSocket error', error.message);
+    socket.on("close", () => {
+        console.log("Bybit socket closed, reconnecting...");
+        setTimeout(() => connectToBybit(onData), 5000);
+    });
 
-
-    })
-
-}
-export const getLiquidations = () => {
-    return liquidationData;
-
-}
+    socket.on("error", (err) => {
+        console.error("Bybit socket error:", err.message);
+    });
+};
